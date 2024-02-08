@@ -1,0 +1,67 @@
+# Überprüfen und ggf. Installation des Moduls MSOnline
+if (-not (Get-Module -Name MSOnline -ListAvailable)) {
+    Install-Module -Name MSOnline -Force -AllowClobber
+}
+
+# Importieren des MSOnline-Moduls
+Import-Module MSOnline
+
+# Verbindung zu Office 365 herstellen
+Connect-MsolService
+
+# Alle lizenzierten Benutzerkonten abrufen
+$licensedUsers = Get-MsolUser -All | Where-Object { $_.IsLicensed -eq $true }
+
+# Starten des HTML-Formats
+$htmlContent = @"
+<!DOCTYPE html>
+<html>
+<head>
+<title>MFA-Status für lizenzierte Benutzer</title>
+<style>
+    table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    th, td {
+        padding: 8px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+    }
+    .enabled {
+        color: green;
+    }
+    .disabled {
+        color: red;
+    }
+</style>
+</head>
+<body>
+<h1>MFA-Status für lizenzierte Benutzer</h1>
+<table>
+<tr>
+    <th>Benutzername</th>
+    <th>MFA-Status</th>
+</tr>
+"@
+
+# Durch jeden lizenzierten Benutzer iterieren und MFA-Status überprüfen
+foreach ($user in $licensedUsers) {
+    $userId = $user.UserPrincipalName
+    $mfaStatus = Get-MsolUser -UserPrincipalName $userId | Select-Object -ExpandProperty StrongAuthenticationRequirements
+    if ($mfaStatus.Count -eq 0) {
+        $htmlContent += "<tr><td>$userId</td><td class='disabled'>MFA nicht eingerichtet</td></tr>"
+    } else {
+        $htmlContent += "<tr><td>$userId</td><td class='enabled'>MFA eingerichtet</td></tr>"
+    }
+}
+
+# Schließen des HTML-Formats
+$htmlContent += "</table></body></html>"
+
+# Ausgabe in eine HTML-Datei schreiben
+$htmlFilePath = "MFA_Status.html"
+$htmlContent | Out-File -FilePath $htmlFilePath -Encoding UTF8
+
+# Meldung ausgeben, wo die HTML-Datei gespeichert wurde
+Write-Host "Die Ausgabe wurde in die Datei '$htmlFilePath' geschrieben."
