@@ -12,13 +12,35 @@ Import-Module ExchangeOnlineManagement
 Import-Module AzureAD
 
 # Verbindung zu Office 365 herstellen
-Connect-MsolService
+try {
+    Connect-MsolService -ErrorAction Stop
+    Write-Host "Erfolgreich mit MSOnline verbunden."
+} catch {
+    Write-Host "Fehler bei der Verbindung zu MSOnline: $_"
+    exit
+}
 
 # Verbindung zu Exchange Online herstellen
-Connect-ExchangeOnline -UserPrincipalName admin@bruegger-keramik.ch
+try {
+    Connect-ExchangeOnline -ErrorAction Stop
+    Write-Host "Erfolgreich mit Exchange Online verbunden."
+} catch {
+    Write-Host "Fehler bei der Verbindung zu Exchange Online: $_"
+    exit
+}
 
 # Verbindung zu Azure AD herstellen
-Connect-AzureAD
+try {
+    Connect-AzureAD -ErrorAction Stop
+    Write-Host "Erfolgreich mit Azure AD verbunden."
+} catch {
+    Write-Host "Fehler bei der Verbindung zu Azure AD: $_"
+    exit
+}
+
+# Den Tenant-Namen abrufen
+$tenantName = (Get-MsolCompanyInformation).DisplayName -replace "[^\w\s]", ""
+Write-Host "$tenantName"
 
 # Alle lizenzierten Benutzerkonten abrufen
 $licensedUsers = Get-MsolUser -All | Where-Object { $_.IsLicensed -eq $true }
@@ -28,7 +50,7 @@ $htmlContent = @"
 <!DOCTYPE html>
 <html>
 <head>
-<title>Lizenz- und Speichernutzungsbericht für Benutzer</title>
+<title>Lizenz- und Speichernutzungsbericht für $tenantName</title>
 <style>
     table {
         width: 100%;
@@ -84,22 +106,24 @@ $mailboxes = Get-Mailbox -ResultSize Unlimited
 foreach ($mailbox in $mailboxes) {
     $stats = Get-MailboxStatistics -Identity $mailbox.UserPrincipalName
     $totalItemSizeMB = $stats.TotalItemSize.Value
-    $lastLogonTime = (Get-MailboxStatistics -Identity $mailbox.UserPrincipalName).LastLogonTime
+    $lastLogonTime = $stats.LastLogonTime
 
-    $user = Get-MsolUser -UserPrincipalName $mailbox.UserPrincipalName
-    if ($user.StrongAuthenticationMethods.Count -eq 0) {
+    $user = Get-AzureADUser -ObjectId $mailbox.UserPrincipalName
+    $mfaStatus = Get-MsolUser -UserPrincipalName $mailbox.UserPrincipalName | Select-Object -ExpandProperty StrongAuthenticationMethods
+    if ($mfaStatus.Count -eq 0) {
         $mfaStatusText = "MFA nicht eingerichtet"
     } else {
         $mfaStatusText = "MFA eingerichtet"
     }
 
-    $htmlContent += "<tr><td>$($mailbox.UserPrincipalName)</td><td>$($mailbox.DisplayName)</td><td>$totalItemSizeMB</td><td>$lastLogonTime</td><td>$mfaStatusText</td></tr>"
+    $htmlContent += "<tr><td>$($mailbox.UserPrincipalName)</td><td>$($mailbox.DisplayName)</td><td>$totalItemSizeMB MB</td><td>$lastLogonTime</td><td>$mfaStatusText</td></tr>"
 }
 
 $htmlContent += "</table></body></html>"
 
 # Ausgabe in eine HTML-Datei schreiben
-$htmlFilePath = "Lizenz_Speichernutzung_MFA_Status.html"
+$htmlFileName = "Report_O365_$tenantName.html"
+$htmlFilePath = Join-Path -Path $PSScriptRoot -ChildPath $htmlFileName
 $htmlContent | Out-File -FilePath $htmlFilePath -Encoding UTF8
 
 # Meldung ausgeben, wo die HTML-Datei gespeichert wurde
