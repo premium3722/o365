@@ -1,0 +1,224 @@
+Write-Host "##################################"
+Write-Host "Script erstellt von: Premium"
+Write-Host "Version 1.0"
+Write-Host "##################################"
+
+# Überprüfen und ggf. Installation der Module
+$modules = @("MSOnline", "ExchangeOnlineManagement", "AzureAD")
+foreach ($module in $modules) {
+    if (-not (Get-Module -Name $module -ListAvailable)) {
+        Install-Module -Name $module -Force -AllowClobber
+    }
+}
+
+# Importieren der Module
+Import-Module MSOnline
+Import-Module ExchangeOnlineManagement
+Import-Module AzureAD
+
+# Verbindung zu Office 365 herstellen
+try {
+    Connect-MsolService -ErrorAction Stop
+    Write-Host "Erfolgreich mit MSOnline verbunden."
+} catch {
+    Write-Host "Fehler bei der Verbindung zu MSOnline: $_"
+    exit
+}
+
+# Verbindung zu Exchange Online herstellen
+try {
+    Connect-ExchangeOnline -ErrorAction Stop
+    Write-Host "Erfolgreich mit Exchange Online verbunden."
+} catch {
+    Write-Host "Fehler bei der Verbindung zu Exchange Online: $_"
+    exit
+}
+
+# Verbindung zu Azure AD herstellen
+try {
+    Connect-AzureAD -ErrorAction Stop
+    Write-Host "Erfolgreich mit Azure AD verbunden."
+} catch {
+    Write-Host "Fehler bei der Verbindung zu Azure AD: $_"
+    exit
+}
+
+# Den Tenant-Namen abrufen
+$tenantName = (Get-MsolCompanyInformation).DisplayName -replace "[^\w\s]", ""
+Write-Host "$tenantName"
+
+# Alle lizenzierten Benutzerkonten abrufen
+$licensedUsers = Get-MsolUser -All | Where-Object { $_.IsLicensed -eq $true }
+
+# Format auswählen
+$format = Read-Host "Geben Sie das gewünschte Exportformat ein (HTML/CSV)"
+
+if ($format -eq "HTML") {
+    # Starten des HTML-Formats
+    $htmlContent = @"
+<!DOCTYPE html>
+<html>
+<head>
+<title>Lizenz- und Speichernutzungsbericht für $tenantName</title>
+<style>
+    table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+    th, td {
+        padding: 8px;
+        text-align: left;
+        border-bottom: 1px solid #ddd;
+    }
+    .enabled {
+        color: green;
+    }
+    .disabled {
+        color: red;
+    }
+</style>
+</head>
+<body>
+<h1>Lizenz- und Speichernutzungsbericht für Benutzer</h1>
+
+<h2>Lizenzinformationen</h2>
+<table>
+<tr>
+    <th>Lizenztyp</th>
+    <th>Verbrauchte Einheiten</th>
+    <th>Vorausbezahlte Einheiten</th>
+</tr>
+"@
+
+    # Lizenzinformationen abrufen und in HTML-Tabelle einfügen
+    $licenses = Get-AzureADSubscribedSku
+    foreach ($license in $licenses) {
+        $htmlContent += "<tr><td>$($license.SkuPartNumber)</td><td>$($license.ConsumedUnits)</td><td>$($license.PrepaidUnits.Enabled)</td></tr>"
+    }
+
+    $htmlContent += "</table>"
+
+    # Benutzerinformationen und Speichernutzung abrufen und in HTML-Tabelle einfügen
+    $htmlContent += @"
+<h2>Benutzerinformationen, Speichernutzung und MFA-Status</h2>
+<table>
+<tr>
+    <th>Benutzername</th>
+    <th>Anzeigename</th>
+    <th>Gesamter Speicherplatz</th>
+    <th>Letzte Anmeldung</th>
+    <th>MFA-Status</th>
+    <th>Zugeordnete Lizenzen</th>
+</tr>
+"@
+
+    $mailboxes = Get-Mailbox -ResultSize Unlimited
+    foreach ($mailbox in $mailboxes) {
+        $stats = Get-MailboxStatistics -Identity $mailbox.UserPrincipalName
+        $totalItemSizeMB = $stats.TotalItemSize.Value
+        $lastLogonTime = $stats.LastLogonTime
+
+        try {
+            $user = Get-AzureADUser -ObjectId $mailbox.UserPrincipalName -ErrorAction Stop
+            $mfaStatus = Get-MsolUser -UserPrincipalName $mailbox.UserPrincipalName | Select-Object -ExpandProperty StrongAuthenticationMethods
+            if ($mfaStatus.Count -eq 0) {
+                $mfaStatusText = "MFA nicht eingerichtet"
+            } else {
+                $mfaStatusText = "MFA eingerichtet"
+            }
+
+            $assignedLicenses = (Get-MsolUser -UserPrincipalName $mailbox.UserPrincipalName).Licenses | ForEach-Object { $_.AccountSkuId }
+
+            $assignedLicensesText = $assignedLicenses -join ", "
+
+            $htmlContent += "<tr><td>$($mailbox.UserPrincipalName)</td><td>$($mailbox.DisplayName)</td><td>$totalItemSizeMB MB</td><td>$lastLogonTime</td><td>$mfaStatusText</td><td>$assignedLicensesText</td></tr>"
+        } catch {
+            Write-Host "Benutzer nicht gefunden oder ein Fehler ist aufgetreten: $mailbox.UserPrincipalName"
+        }
+    }
+
+    $htmlContent += "</table></body></html>"
+
+    # Sicherstellen, dass $PSScriptRoot nicht leer ist
+    if (-not $PSScriptRoot) {
+        $PSScriptRoot = (Get-Location).Path
+    }
+
+    # Ausgabe in eine HTML-Datei schreiben
+    $htmlFileName = "Report_O365_$tenantName.html"
+    $htmlFilePath = Join-Path -Path $PSScriptRoot -ChildPath $htmlFileName
+    $htmlContent | Out-File -FilePath $htmlFilePath -Encoding UTF8
+
+    # Meldung ausgeben, wo die HTML-Datei gespeichert wurde
+    Write-Host "Die Ausgabe wurde in die Datei '$htmlFilePath' geschrieben."
+} elseif ($format -eq "CSV") {
+    # CSV Header erstellen
+    $csvData = @()
+
+    # Lizenzinformationen abrufen und hinzufügen
+    $licenses = Get-AzureADSubscribedSku
+    foreach ($license in $licenses) {
+        $csvData += [PSCustomObject]@{
+            Benutzername          = ""
+            Anzeigename           = ""
+            GesamterSpeicherplatz = ""
+            LetzteAnmeldung       = ""
+            MFAStatus             = ""
+            ZugeordneteLizenzen   = ""
+            Lizenztyp             = $license.SkuPartNumber
+            VerbrauchteEinheiten  = $license.ConsumedUnits
+            VorausbezahlteEinheiten = $license.PrepaidUnits.Enabled
+        }
+    }
+
+    # Benutzerinformationen und Speichernutzung abrufen und hinzufügen
+    $mailboxes = Get-Mailbox -ResultSize Unlimited
+    foreach ($mailbox in $mailboxes) {
+        $stats = Get-MailboxStatistics -Identity $mailbox.UserPrincipalName
+        $totalItemSizeMB = $stats.TotalItemSize.Value
+        $lastLogonTime = $stats.LastLogonTime
+
+        try {
+            $user = Get-AzureADUser -ObjectId $mailbox.UserPrincipalName -ErrorAction Stop
+            $mfaStatus = Get-MsolUser -UserPrincipalName $mailbox.UserPrincipalName | Select-Object -ExpandProperty StrongAuthenticationMethods
+            if ($mfaStatus.Count -eq 0) {
+                $mfaStatusText = "MFA nicht eingerichtet"
+            } else {
+                $mfaStatusText = "MFA eingerichtet"
+            }
+
+            $assignedLicenses = (Get-MsolUser -UserPrincipalName $mailbox.UserPrincipalName).Licenses | ForEach-Object { $_.AccountSkuId }
+
+            $assignedLicensesText = $assignedLicenses -join ", "
+
+            $csvData += [PSCustomObject]@{
+                Benutzername          = $mailbox.UserPrincipalName
+                Anzeigename           = $mailbox.DisplayName
+                GesamterSpeicherplatz = "$totalItemSizeMB MB"
+                LetzteAnmeldung       = $lastLogonTime
+                MFAStatus             = $mfaStatusText
+                ZugeordneteLizenzen   = $assignedLicensesText
+                Lizenztyp             = ""
+                VerbrauchteEinheiten  = ""
+                VorausbezahlteEinheiten = ""
+            }
+        } catch {
+            Write-Host "Benutzer nicht gefunden oder ein Fehler ist aufgetreten: $mailbox.UserPrincipalName"
+        }
+    }
+
+    # Sicherstellen, dass $PSScriptRoot nicht leer ist
+    if (-not $PSScriptRoot) {
+        $PSScriptRoot = (Get-Location).Path
+    }
+
+    # Ausgabe in eine CSV-Datei schreiben
+    $csvFileName = "Report_O365_$tenantName.csv"
+    $csvFilePath = Join-Path -Path $PSScriptRoot -ChildPath $csvFileName
+    $csvData | Export-Csv -Path $csvFilePath -NoTypeInformation -Encoding UTF8
+
+    # Meldung ausgeben, wo die CSV-Datei gespeichert wurde
+    Write-Host "Die Ausgabe wurde in die Datei '$csvFilePath' geschrieben."
+} else {
+    Write-Host "Ungültiges Format angegeben. Bitte geben Sie entweder HTML oder CSV ein."
+}
