@@ -1,0 +1,89 @@
+# Überprüfen und ggf. Installation der Module
+$modules = @("MSOnline", "ExchangeOnlineManagement", "AzureAD")
+foreach ($module in $modules) {
+    if (-not (Get-Module -Name $module -ListAvailable)) {
+        Install-Module -Name $module -Force -AllowClobber
+    }
+}
+
+$exportpath_sharedmailbox = "C:\Users\usrth1909\Downloads\sharedmailbox.csv"
+$exportpath_ressource = "C:\Users\usrth1909\Downloads\ressource.csv"
+
+# Importieren der Module
+Import-Module MSOnline
+Import-Module ExchangeOnlineManagement
+Import-Module AzureAD
+
+
+Connect-ExchangeOnline -UserPrincipalName <ADMIN> -ShowProgress $true
+
+# Freigegebene Postfächer abrufen
+$sharedMailboxes = Get-Mailbox -RecipientTypeDetails SharedMailbox
+
+# Für jedes freigegebene Postfach die Berechtigungen abrufen und in eine Liste speichern
+$permissions = @()
+
+foreach ($mailbox in $sharedMailboxes) {
+    # Senden-Als Berechtigungen abrufen
+    $sendAsPermissions = Get-RecipientPermission -Identity $mailbox.PrimarySmtpAddress | Where-Object { $_.Trustee -ne "NT AUTHORITY\SELF" -and $_.AccessRights -contains "SendAs" } | Select-Object Trustee
+
+    # Senden im Auftrag von Berechtigungen abrufen
+    $sendOnBehalfPermissions = Get-Mailbox -Identity $mailbox.PrimarySmtpAddress | Select-Object -ExpandProperty GrantSendOnBehalfTo
+
+    # Speichern der Ergebnisse in der Liste
+    $permissions += [pscustomobject]@{
+        DisplayName          = $mailbox.DisplayName
+        PrimarySmtpAddress   = $mailbox.PrimarySmtpAddress
+        Alias                = $mailbox.Alias
+        UsageLocation        = $mailbox.UsageLocation
+        UserPrincipalName    = $mailbox.UserPrincipalName
+        SendAsUsers          = ($sendAsPermissions.Trustee -join ", ")
+        SendOnBehalfUsers    = ($sendOnBehalfPermissions -join ", ")
+        EmailAddresses       = $mailbox.EmailAddresses -join ", "
+    }
+}
+
+# Exportieren in eine CSV-Datei
+$permissions | Export-Csv -Path $exportpath_sharedmailbox -NoTypeInformation
+
+# Ressourcenpostfächer abrufen
+$resourceMailboxes = Get-Mailbox -RecipientTypeDetails RoomMailbox, EquipmentMailbox
+
+# Array für die erweiterten Informationen
+$exportData = @()
+
+foreach ($mailbox in $resourceMailboxes) {
+    # Berechtigungen abrufen
+    $permissions = Get-MailboxPermission -Identity $mailbox.Alias | 
+                   Where-Object { $_.User -notlike "NT AUTHORITY\SELF" } | 
+                   Select-Object User, AccessRights
+
+    # Berechtigungen formatieren
+    $permissionInfo = $permissions | ForEach-Object {
+        "$($_.User): $($_.AccessRights -join ', ')"
+    }
+
+    # Die Berechtigungen als Zeichenkette verbinden
+    $permissionInfoString = $permissionInfo -join '; '
+
+    # Typ der Ressource
+    $resourceType = if ($mailbox.RecipientTypeDetails -eq 'RoomMailbox') {
+        'Room'
+    } elseif ($mailbox.RecipientTypeDetails -eq 'EquipmentMailbox') {
+        'Equipment'
+    }
+
+    # Informationen sammeln
+    $exportData += [pscustomobject]@{
+        DisplayName        = $mailbox.DisplayName
+        PrimarySmtpAddress = $mailbox.PrimarySmtpAddress
+        Alias              = $mailbox.Alias
+        UserPrincipalName  = $mailbox.UserPrincipalName
+        ResourceType       = $resourceType
+        Permissions        = $permissionInfoString
+        #EmailAddresses     = $mailbox.EmailAddresses -join '; '
+    }
+}
+
+# Exportieren in eine CSV-Datei
+$exportData | Export-Csv -Path $exportpath_ressource -NoTypeInformation
