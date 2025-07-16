@@ -1,0 +1,38 @@
+############################################
+$targetDomain = "meinedomain.ch"  #Domain eingeben wo es angewendet werden soll
+$debugMode = $false  #Debug Modus einschalten
+
+############################################
+
+# Verbindung zu Microsoft Graph aufbauen
+connect-MgGraph -Scopes "UserAuthenticationMethod.ReadWrite.All"
+$allUsers = Get-MgUser -All
+
+# Filter in PowerShell nach Domain
+$filteredUsers = $allUsers | Where-Object { $_.UserPrincipalName -like "*@$targetDomain" }
+
+foreach ($user in $filteredUsers) {
+    Write-Host "`nVerarbeite Benutzer: $($user.UserPrincipalName)"
+
+    try {
+        $phoneMethods = Get-MgUserAuthenticationPhoneMethod -UserId $user.Id
+
+        foreach ($method in $phoneMethods) {
+            if ($method.SmsSignInState -eq "ready") {
+                Write-Host " - SMS-Anmeldung ist AKTIV."
+
+                if ($debugMode) {
+                    Write-Host "   -> DEBUG: Würde SMS-Anmeldung deaktivieren"
+                } else {
+                    Write-Host "   -> DEAKTIVIERE SMS-Anmeldung..." -ForegroundColor Red
+                    Disable-MgUserAuthenticationPhoneMethodSmsSignIn -UserId $user.Id -PhoneAuthenticationMethodId $method.Id
+                    Write-Host "   ✓ Deaktiviert"
+                }
+            } else {
+                Write-Host " - SMS-Anmeldung bereits deaktiviert oder nicht zutreffend."
+            }
+        }
+    } catch {
+        Write-Warning "Fehler bei Benutzer $($user.UserPrincipalName): $_"
+    }
+}
